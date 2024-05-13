@@ -1,49 +1,57 @@
-name: "Gradle build"
-permissions: {}
+name: Release
+
 on:
-  - push
-  - pull_request
-  - workflow_dispatch
+  push:
+    tags:
+      - "v*"
 
 jobs:
-  build:
-    name: "Gradle build"
+  release:
     runs-on: ubuntu-latest
-
+    name: Release
     steps:
-      - name: "Checkout sources"
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v2
         with:
           fetch-depth: 0
-      - name: "Setup Java"
+
+      - name: Cache Gradle
+        uses: burrunan/gradle-cache-action@v1
+
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
           java-version: "17"
-      - name: "Gradle Wrapper validation"
-        uses: gradle/wrapper-validation-action@v2
-      - name: "Setup Gradle"
-        uses: gradle/actions/setup-gradle@v3
-      - name: Cache Gradle
-        uses: burrunan/gradle-cache-action@v1
-      - name: "Setup matchers"
+
+      - name: Build
+        run: ./gradlew --no-daemon :play-services-core:assembleMapboxDefault :play-services-core:assembleMapboxHuawei
+
+      - name: Move
         run: |
-          # Setting up matchers...
+          mkdir play-services-core/build/outputs/apk/releases
+          mv \
+            play-services-core/build/outputs/apk/mapboxDefault/release/*.apk \
+            play-services-core/build/outputs/apk/mapboxHuawei/release/*.apk \
+            play-services-core/build/outputs/apk/releases
 
-          matchers_dir='${{ github.workspace }}/.github/matchers'
-          matcher_list()
-          {
-            echo 'gradle-build-matcher.json'
-            echo 'gradle-build-kotlin-error-matcher.json'
-          }
+      - name: Sign
+        id: sign_apk
+        uses: ilharp/sign-android-release@v1
+        with:
+          releaseDir: play-services-core/build/outputs/apk/releases
+          signingKey: ${{ secrets.SIGNING_KEYSTORE }}
+          keyAlias: ${{ secrets.SIGNING_KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
 
-          matcher_list | while IFS='' read -r NAME; do
-            if test -f "${matchers_dir:?}/${NAME:?}"; then
-              echo "::add-matcher::${matchers_dir:?}/${NAME:?}"
-              echo "Matcher configured: ${NAME:?}"
-            fi
-          done
-      - name: "Execute Gradle assemble"
-        run: "./gradlew --no-daemon assemble"
-      - name: "Execute Gradle check"
-        run: "./gradlew --no-daemon check"
+      - name: Split
+        uses: jungwinter/split@v2
+        id: signed_files
+        with:
+          msg: ${{ steps.sign_apk.outputs.signedFiles }}
+          separator: ':'
+
+      - name: Release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: play-services-core/build/outputs/apk/releases/*-signed.apk
